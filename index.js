@@ -38,7 +38,9 @@ AFRAME.registerComponent('teleport-controls', {
     curveMissColor: {type: 'color', default: '#ff0000'},
     curveShootingSpeed: {default: 5, min: 0, if: {type: ['parabolic']}},
     landingNormal: {type: 'vec3', default: '0 1 0'},
-    landingMaxAngle: {default: '45', min: 0, max: 360}
+    landingMaxAngle: {default: '45', min: 0, max: 360},
+    offsetBySelector: {default: ''},
+    changeYPos: {default: true}
   },
 
   init: function () {
@@ -62,6 +64,13 @@ AFRAME.registerComponent('teleport-controls', {
     teleportEntity.classList.add('teleportRay');
     teleportEntity.setAttribute('visible', false);
     el.sceneEl.appendChild(this.teleportEntity);
+
+    if(this.data.offsetBySelector) {
+      var offsetEl = el.sceneEl.querySelector(this.data.offsetBySelector);
+      this.offsetBy = offsetEl.getAttribute('position');
+    } else {
+      this.offsetBy = {x: 0, y: 0, z: 0};
+    }
 
     el.addEventListener(data.button + 'down', this.onButtonDown.bind(this));
     el.addEventListener(data.button + 'up', this.onButtonUp.bind(this));
@@ -131,7 +140,12 @@ AFRAME.registerComponent('teleport-controls', {
       var direction = shootAngle.set(0, 0, -1)
         .applyQuaternion(quaternion).normalize();
       this.line.setDirection(direction.clone());
-      p0.copy(this.obj.position);
+      //p0.copy(this.obj.position);
+      p0 = new THREE.Vector3(
+        this.obj.position.x + this.offsetBy.x,
+        this.obj.position.y + this.offsetBy.y,
+        this.obj.position.z + this.offsetBy.z
+      );
 
       var last = p0.clone();
       var next;
@@ -231,8 +245,12 @@ AFRAME.registerComponent('teleport-controls', {
     var cameraEl = this.el.sceneEl.camera.el;
     var camPosition = new THREE.Vector3().copy(cameraEl.getAttribute('position'));
 
-    var newCamPositionY = camPosition.y + this.hitPoint.y - this.prevHeightDiff;
-    var newCamPosition = new THREE.Vector3(this.hitPoint.x, newCamPositionY, this.hitPoint.z);
+    var newCamPositionY = camPosition.y - this.offsetBy.y
+    if(this.data.changeYPos) {
+      newCamPositionY += (this.hitPoint.y - this.prevHeightDiff);
+    }
+
+    var newCamPosition = new THREE.Vector3(this.hitPoint.x - this.offsetBy.x, newCamPositionY, this.hitPoint.z - this.offsetBy.z);
     this.prevHeightDiff = this.hitPoint.y;
 
     cameraEl.setAttribute('position', newCamPosition);
