@@ -4,6 +4,8 @@
     <script src="../build.js"></script>
     <script src="../common/shaders/skyGradient.js"></script>
     <script src="https://rawgit.com/ngokevin/aframe-motion-capture/343f99/dist/aframe-motion-capture.min.js"></script>
+    <script src="https://unpkg.com/aframe-input-mapping-component@0.1.0/dist/aframe-input-mapping-component.min.js"></script>
+    <script src="../common/mappings.js"></script>
   </head>
   <body style="background-color: #000">
     <script>
@@ -53,8 +55,14 @@
       <a-entity meshes></a-entity>
 
       <!-- hand controls -->
-      <a-mixin id="teleport" teleport-controls="type: parabolic; collisionEntities: [mixin='box'], [mixin='sphere']"></a-mixin>
-      <a-entity id="leftHand" mixin="teleport" vive-controls="hand: left"></a-entity>
+      <a-mixin id="teleport" teleport-controls="type: parabolic; cameraRig: #cameraRig; collisionEntities: [mixin='box'], [mixin='sphere']"></a-mixin>
+      <a-entity id="cameraRig">
+        <a-entity camera wasd-controls look-controls></a-entity>
+        <!-- hand controls -->
+        <a-entity id="leftHand" mixin="teleport" vive-controls="hand: left"></a-entity>
+        <a-entity id="rightHand" mixin="teleport" vive-controls="hand: right"></a-entity>
+      </a-entity>
+
       <a-entity id="rightHand" mixin="teleport" vive-controls="hand: right"></a-entity>
       </a-entity>
     </a-scene>

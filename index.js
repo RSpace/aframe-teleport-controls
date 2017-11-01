@@ -1,4 +1,4 @@
-/* global THREE, AFRAME  */
+/* global THREE, AFRAME, Element  */
 var cylinderTexture = require('./lib/cylinderTexture');
 var parabolicCurve = require('./lib/ParabolicCurve');
 var RayCurve = require('./lib/RayCurve');
@@ -26,8 +26,12 @@ AFRAME.registerComponent('teleport-controls', {
   schema: {
     type: {default: 'parabolic', oneOf: ['parabolic', 'line']},
     button: {default: 'trackpad', oneOf: ['trackpad', 'trigger', 'grip', 'menu']},
+    startEvents: {type: 'array'},
+    endEvents: {type: 'array'},
     collisionEntities: {default: ''},
     hitEntity: {type: 'selector'},
+    cameraRig: {type: 'selector'},
+    teleportOrigin: {type: 'selector'},
     hitCylinderColor: {type: 'color', default: '#99ff99'},
     hitCylinderRadius: {default: 0.25, min: 0},
     hitCylinderHeight: {default: 0.3, min: 0},
@@ -37,6 +41,7 @@ AFRAME.registerComponent('teleport-controls', {
     curveHitColor: {type: 'color', default: '#99ff99'},
     curveMissColor: {type: 'color', default: '#ff0000'},
     curveShootingSpeed: {default: 5, min: 0, if: {type: ['parabolic']}},
+    defaultPlaneSize: { default: 100 },
     landingNormal: {type: 'vec3', default: '0 1 0'},
     landingMaxAngle: {default: '45', min: 0, max: 360}
   },
@@ -45,26 +50,47 @@ AFRAME.registerComponent('teleport-controls', {
     var data = this.data;
     var el = this.el;
     var teleportEntity;
+    var i;
 
     this.active = false;
     this.obj = el.object3D;
     this.hitPoint = new THREE.Vector3();
+    this.rigWorldPosition = new THREE.Vector3();
+    this.newRigWorldPosition = new THREE.Vector3();
+    this.teleportEventDetail = {
+      oldPosition: this.rigWorldPosition,
+      newPosition: this.newRigWorldPosition,
+      hitPoint: this.hitPoint
+    };
+
     this.hit = false;
-    this.prevHeightDiff = 0;
+    this.prevHitHeight = 0;
     this.referenceNormal = new THREE.Vector3();
     this.curveMissColor = new THREE.Color();
     this.curveHitColor = new THREE.Color();
     this.raycaster = new THREE.Raycaster();
 
-    this.defaultPlane = createDefaultPlane();
+    this.defaultPlane = createDefaultPlane(this.data.defaultPlaneSize);
 
     teleportEntity = this.teleportEntity = document.createElement('a-entity');
     teleportEntity.classList.add('teleportRay');
     teleportEntity.setAttribute('visible', false);
     el.sceneEl.appendChild(this.teleportEntity);
 
-    el.addEventListener(data.button + 'down', this.onButtonDown.bind(this));
-    el.addEventListener(data.button + 'up', this.onButtonUp.bind(this));
+    this.onButtonDown = this.onButtonDown.bind(this);
+    this.onButtonUp = this.onButtonUp.bind(this);
+    if (this.data.startEvents.length && this.data.endEvents.length) {
+
+      for (i = 0; i < this.data.startEvents.length; i++) {
+        el.addEventListener(this.data.startEvents[i], this.onButtonDown);
+      }
+      for (i = 0; i < this.data.endEvents.length; i++) {
+        el.addEventListener(this.data.endEvents[i], this.onButtonUp);
+      }
+    } else {
+      el.addEventListener(data.button + 'down', this.onButtonDown);
+      el.addEventListener(data.button + 'up', this.onButtonUp);
+    }
 
     this.queryCollisionEntities();
   },
@@ -116,11 +142,17 @@ AFRAME.registerComponent('teleport-controls', {
 
   tick: (function () {
     var p0 = new THREE.Vector3();
+    var v0 = new THREE.Vector3();
+    var g = -9.8;
+    var a = new THREE.Vector3(0, g, 0);
+    var next = new THREE.Vector3();
+    var last = new THREE.Vector3();
     var quaternion = new THREE.Quaternion();
     var translation = new THREE.Vector3();
     var scale = new THREE.Vector3();
     var shootAngle = new THREE.Vector3();
     var lastNext = new THREE.Vector3();
+    var auxDirection = new THREE.Vector3();
 
     return function (time, delta) {
       if (!this.active) { return; }
@@ -130,11 +162,10 @@ AFRAME.registerComponent('teleport-controls', {
 
       var direction = shootAngle.set(0, 0, -1)
         .applyQuaternion(quaternion).normalize();
-      this.line.setDirection(direction.clone());
-      p0.copy(this.obj.position);
+      this.line.setDirection(auxDirection.copy(direction));
+      this.obj.getWorldPosition(p0);
 
-      var last = p0.clone();
-      var next;
+      last.copy(p0);
 
       // Set default status as non-hit
       this.teleportEntity.setAttribute('visible', true);
@@ -143,13 +174,11 @@ AFRAME.registerComponent('teleport-controls', {
       this.hit = false;
 
       if (this.data.type === 'parabolic') {
-        var v0 = direction.clone().multiplyScalar(this.data.curveShootingSpeed);
-        var g = -9.8;
-        var a = new THREE.Vector3(0, g, 0);
+        v0.copy(direction).multiplyScalar(this.data.curveShootingSpeed);
 
         for (var i = 0; i < this.line.numPoints; i++) {
           var t = i / (this.line.numPoints - 1);
-          next = parabolicCurve(p0, v0, a, t);
+          parabolicCurve(p0, v0, a, t, next);
           // Update the raycaster with the length of the current segment last->next
           var dirLastNext = lastNext.copy(next).sub(last).normalize();
           this.raycaster.far = dirLastNext.length();
@@ -159,9 +188,8 @@ AFRAME.registerComponent('teleport-controls', {
           last.copy(next);
         }
       } else if (this.data.type === 'line') {
-        next = last.add(direction.clone().multiplyScalar(this.data.maxLength));
+        next.copy(last).add(auxDirection.copy(direction).multiplyScalar(this.data.maxLength));
         this.raycaster.far = this.data.maxLength;
-
         this.raycaster.set(p0, direction);
         this.line.setPoint(0, p0);
 
@@ -181,7 +209,7 @@ AFRAME.registerComponent('teleport-controls', {
 
     if (!data.collisionEntities) {
       this.collisionEntities = [];
-      return
+      return;
     }
 
     collisionEntities = [].slice.call(el.sceneEl.querySelectorAll(data.collisionEntities));
@@ -212,47 +240,63 @@ AFRAME.registerComponent('teleport-controls', {
   /**
    * Jump!
    */
-  onButtonUp: function (evt) {
-    if (!this.active) { return; }
+  onButtonUp: (function () {
+    const teleportOriginWorldPosition = new THREE.Vector3();
+    const newRigLocalPosition = new THREE.Vector3();
+    const newHandPosition = new THREE.Vector3();
+    const handPosition = new THREE.Vector3();
 
-    // Jump!
+    return function (evt) {
+      if (!this.active) { return; }
 
-    // Hide the hit point and the curve
-    this.active = false;
-    this.hitEntity.setAttribute('visible', false);
-    this.teleportEntity.setAttribute('visible', false);
+      // Hide the hit point and the curve
+      this.active = false;
+      this.hitEntity.setAttribute('visible', false);
+      this.teleportEntity.setAttribute('visible', false);
 
-    if (!this.hit) {
-      // Button released but not hit point
-      return;
-    }
+      if (!this.hit) {
+        // Button released but not hit point
+        return;
+      }
 
-    // @todo Create this aux vectors outside
-    var cameraEl = this.el.sceneEl.camera.el;
-    var camPosition = new THREE.Vector3().copy(cameraEl.getAttribute('position'));
+      const rig = this.data.cameraRig || this.el.sceneEl.camera.el;
+      rig.object3D.getWorldPosition(this.rigWorldPosition);
+      this.newRigWorldPosition.copy(this.hitPoint);
 
-    var newCamPositionY = camPosition.y + this.hitPoint.y - this.prevHeightDiff;
-    var newCamPosition = new THREE.Vector3(this.hitPoint.x, newCamPositionY, this.hitPoint.z);
-    this.prevHeightDiff = this.hitPoint.y;
+      // If a teleportOrigin exists, offset the rig such that the teleportOrigin is above the hitPoint
+      const teleportOrigin = this.data.teleportOrigin;
+      if (teleportOrigin) {
+        teleportOrigin.object3D.getWorldPosition(teleportOriginWorldPosition);
+        this.newRigWorldPosition.sub(teleportOriginWorldPosition).add(this.rigWorldPosition);
+      }
 
-    cameraEl.setAttribute('position', newCamPosition);
+      // Always keep the rig at the same offset off the ground after teleporting
+      this.newRigWorldPosition.y = this.rigWorldPosition.y + this.hitPoint.y - this.prevHitHeight;
+      this.prevHitHeight = this.hitPoint.y;
 
-    // Find the hands and move them proportionally
-    var hands = document.querySelectorAll('a-entity[tracked-controls]');
-    for (var i = 0; i < hands.length; i++) {
-      var position = hands[i].getAttribute('position');
-      var pos = new THREE.Vector3().copy(position);
-      var diff = camPosition.clone().sub(pos);
-      var newPosition = newCamPosition.clone().sub(diff);
-      hands[i].setAttribute('position', newPosition);
-    }
+      // Finally update the rigs position
+      newRigLocalPosition.copy(this.newRigWorldPosition);
+      if (rig.object3D.parent) {
+        rig.object3D.parent.worldToLocal(newRigLocalPosition);
+      }
+      rig.setAttribute('position', newRigLocalPosition);
 
-    this.el.emit('teleport', {
-      oldPosition: camPosition,
-      newPosition: newCamPosition,
-      hitPoint: this.hitPoint
-    });
-  },
+      // If a rig was not explicitly declared, look for hands and mvoe them proportionally as well
+      if (!this.data.cameraRig) {
+        var hands = document.querySelectorAll('a-entity[tracked-controls]');
+        for (var i = 0; i < hands.length; i++) {
+          hands[i].object3D.getWorldPosition(handPosition);
+
+          // diff = rigWorldPosition - handPosition
+          // newPos = newRigWorldPosition - diff
+          newHandPosition.copy(this.newRigWorldPosition).sub(this.rigWorldPosition).add(handPosition);
+          hands[i].setAttribute('position', newHandPosition);
+        }
+      }
+
+      this.el.emit('teleported', this.teleportEventDetail);
+    };
+  })(),
 
   /**
    * Check for raycaster intersection.
@@ -262,16 +306,15 @@ AFRAME.registerComponent('teleport-controls', {
    * @returns {boolean} true if there's an intersection.
    */
   checkMeshCollisions: function (i, next) {
-    var intersects;
-    var meshes;
-
-    // Gather the meshes here to avoid having to wait for entities to iniitalize.
-    meshes = this.collisionEntities.map(function (entity) {
+    // @todo We should add a property to define if the collisionEntity is dynamic or static
+    // If static we should do the map just once, otherwise we're recreating the array in every
+    // loop when aiming.
+    var meshes = this.collisionEntities.map(function (entity) {
       return entity.getObject3D('mesh');
     }).filter(function (n) { return n; });
     meshes = meshes.length ? meshes : [this.defaultPlane];
 
-    intersects = this.raycaster.intersectObjects(meshes, true);
+    var intersects = this.raycaster.intersectObjects(meshes, true);
     if (intersects.length > 0 && !this.hit &&
         this.isValidNormalsAngle(intersects[0].face.normal)) {
       var point = intersects[0].point;
@@ -358,13 +401,12 @@ function createHitEntity (data) {
   return hitEntity;
 }
 
-function createDefaultPlane () {
+function createDefaultPlane (size) {
   var geometry;
   var material;
 
-  // @hack: Because I can't get THREE.BufferPlane working on raycaster.
-  geometry = new THREE.BoxBufferGeometry(100, 0.5, 100);
-  geometry.applyMatrix(new THREE.Matrix4().makeTranslation(0, -0.25, 0));
+  geometry = new THREE.PlaneBufferGeometry(100, 100);
+  geometry.rotateX(-Math.PI / 2);
   material = new THREE.MeshBasicMaterial({color: 0xffff00});
   return new THREE.Mesh(geometry, material);
 }
